@@ -63,12 +63,15 @@
 #include "lldp_utils.h"
 #include <tsn_uniconf/yangs/ieee802-dot1ab-lldp_access.h>
 #include <tsn_uniconf/yangs/ietf-interfaces_access.h>
-#include "yangs/generated/ieee802-dot1ab-lldp_runconf.h"
-#include <tsn_uniconf/yangs/tsn_data.h>
+#include <tsn_uniconf/yangs/generated/ieee802-dot1ab-lldp_runconf.h>
 
 #include "interface_mgr.h"
 
 extern int yang_config_init(uc_dbald *dbald, uc_hwald *hwald);
+
+extern uint8_t IEEE802_DOT1AB_LLDP_func(uc_dbald *dbald);
+#define IEEE802_DOT1AB_LLDP_RW IEEE802_DOT1AB_LLDP_func(dbald)
+#define IEEE802_DOT1AB_LLDP_RO (IEEE802_DOT1AB_LLDP_func(dbald)|0x80u)
 
 #define MAX_KEY_SIZE    8
 typedef char semname_t[35]; // strlen("tmp-utlldp_monsem") + 16 + 1 = 34
@@ -692,8 +695,6 @@ int initialize_cfg(const char* dbfile, yang_lldp_t* yang_lldp, bool notice)
 	int ret = -1;
 	uc_dbald *dbald = NULL;
 	uc_notice_data_t *ucntd=NULL;
-	xl4_data_data_t *xdd = NULL;
-
 
 	ret=uniconf_ready(dbfile, g_uniconf_access_mode, 100);
 	if (ret == 0)
@@ -701,9 +702,9 @@ int initialize_cfg(const char* dbfile, yang_lldp_t* yang_lldp, bool notice)
 		// Init
 		dbald=uc_dbal_open(dbfile, "w", g_uniconf_access_mode);
 		ucntd=uc_notice_init(g_uniconf_access_mode, dbfile);
-		xdd =xl4_data_init(dbald);
+		if (!ucntd) { return -1; }
 
-		ydbi_access_init(dbald, xdd, ucntd);
+		ydbi_access_init(dbald, ucntd);
 
 		ret = ydbi_load_lldp_db(ydbi_access_handle(), yang_lldp);
 		if (ret == 0)
@@ -732,7 +733,6 @@ void deinit_db()
 	yang_db_item_access_t *ydbia = ydbi_access_handle();
 	deregister_notice(ydbia->dbald, ydbia->ucntd);
 	uc_notice_close(ydbia->ucntd, g_uniconf_access_mode);
-	xl4_data_close(ydbia->xdd);
 	uc_dbal_close(ydbia->dbald, g_uniconf_access_mode);
 
 	UB_LOG(UBL_INFO, "%s: done\n", __func__);
@@ -2215,7 +2215,10 @@ static void fill_remote_unknown_tlv(uint8_t* k, uint32_t tlv_type, lldp_cfg_para
 	switch(k[5])
 	{
 	case IEEE802_DOT1AB_LLDP_TLV_INFO:
-		memcpy(remote_unknow_tlv->tlv_info, (uint8_t*)prm->value, prm->vsize);
+		if (remote_unknow_tlv)
+	        {
+			memcpy(remote_unknow_tlv->tlv_info, (uint8_t*)prm->value, prm->vsize);
+		}
 		break;
 	}
 }
@@ -2245,7 +2248,10 @@ static void fill_remote_org_info(uint8_t* k, uint32_t info_id, uint32_t info_sub
 	case IEEE802_DOT1AB_LLDP_REMOTE_INFO:
 		// UB_LOG(UBL_INFO, "copy oui info [%d] \n",  prm->vsize);
 		// ub_hexdump(true, true,  (uint8_t*)prm->value, prm->vsize, 0);
-		memcpy(remote_org_info->remote_info, (uint8_t*)prm->value, prm->vsize);
+		if (remote_org_info)
+		{
+			memcpy(remote_org_info->remote_info, (uint8_t*)prm->value, prm->vsize);
+		}
 		// UB_LOG(UBL_INFO, "copy oui info [%d] done\n",  prm->vsize);
 		break;
 	}
@@ -2467,8 +2473,7 @@ static void fill_lldp_config_info(void *key, yang_lldp_t* lldp, lldp_cfg_param_t
 {
 	if (key)
 	{
-		if( ( ((uint8_t*)key)[0] == IEEE802_DOT1AB_LLDP_RW || ((uint8_t*)key)[0] == IEEE802_DOT1AB_LLDP_RO)  
-			&& ((uint8_t*)key)[1] == IEEE802_DOT1AB_LLDP_LLDP )
+		if( ((uint8_t*)key)[1] == IEEE802_DOT1AB_LLDP_LLDP )
 		{
 			// UB_LOG(UBL_INFO, "%s: RW key[0] %d\n", __func__, ((uint8_t*)key)[0]);
 			switch (((uint8_t*)key)[2])
@@ -2514,10 +2519,12 @@ static void fill_lldp_config_info(void *key, yang_lldp_t* lldp, lldp_cfg_param_t
 					else
 					{
 						UB_LOG(UBL_INFO, "%s Invalid entry due to MAC invalid \n", if_name);
+						#if 0
 						UB_LOG(UBL_INFO, "%s %s/%s/%s/%s \n", if_name, ieee802_dot1ab_lldp_get_string(((uint8_t*)key)[3]),
 						 ieee802_dot1ab_lldp_get_string(((uint8_t*)key)[4]),
 						 ieee802_dot1ab_lldp_get_string(((uint8_t*)key)[5]),
 						 ieee802_dot1ab_lldp_get_string(((uint8_t*)key)[6]));
+						#endif
 					}
 				}
 				break;
@@ -2542,6 +2549,7 @@ static void load_specific_module(yang_db_item_access_t *ydbia, yang_lldp_t* lldp
 	lldp_cfg_param_t prm;
 	void *key=NULL;
 	uint32_t ksize;
+	uc_dbald *dbald = ydbia->dbald;
 	
 	while(true){
 		memset(&prm, 0, sizeof(prm));
@@ -2558,7 +2566,10 @@ static void load_specific_module(yang_db_item_access_t *ydbia, yang_lldp_t* lldp
 			continue;
 		}
 
-		fill_lldp_config_info(key, lldp, &prm);
+		if( ((uint8_t*)key)[0] == IEEE802_DOT1AB_LLDP_RW || ((uint8_t*)key)[0] == IEEE802_DOT1AB_LLDP_RO ) 
+		{
+			fill_lldp_config_info(key, lldp, &prm);
+		}
 
 		yang_db_extract_key_free(prm.aps, prm.kvs, prm.kss);
 		UB_SD_RELMEM(YANGINIT_GEN_SMEM, prm.rstr);
@@ -2582,6 +2593,7 @@ static void refill_port_interval_info(yang_lldp_t* lldp)
 int ydbi_load_lldp_db(yang_db_item_access_t *ydbia, yang_lldp_t* lldp)
 {
 	uc_range *range=NULL;
+	uc_dbald *dbald = ydbia->dbald;
 	int ret=0;
 
 	// Get IEEE802_DOT1AB_LLDP_RO/key*
